@@ -17,12 +17,10 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 
-from sklearn.preprocessing import StandardScaler
-from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 
 
-# Dataset Preparation
+# Data Prep
 def encode_sequence(seq, max_length=1000):
     # Define a mapping for common amino acids
     amino_acids = "ACDEFGHIKLMNPQRSTVWY"
@@ -55,7 +53,7 @@ class PiNUIDataset(Dataset):
         return len(self.targets)
 
     def __getitem__(self, idx):
-        return {'seqA': self.seqA[idx], 'seqB': self.seqB[idx]}, self.targets[idx]
+        return {'seqA':self.seqA[idx], 'seqB':self.seqB[idx]}, self.targets[idx]
     
 # Prepare dataset for training
 def prepare_data(train_df, test_df, target='interaction', batch_size=32, max_length=1000):
@@ -78,7 +76,6 @@ def prepare_data(train_df, test_df, target='interaction', batch_size=32, max_len
   
     return train_loader, test_loader
 
-
 # Model
 ## MLP  
 class PiNUIMLP(nn.Module):
@@ -91,14 +88,12 @@ class PiNUIMLP(nn.Module):
 
         self.Dropout = nn.Dropout(dropout)
 
-        self.sigmoid = nn.Sigmoid()
-
     def forward(self, features_dict):
         # Embedding for each seq
         seqA = features_dict['seqA']
         seqB = features_dict['seqB']
 
-        x = torch.stack([
+        x = torch.cat([
             seqA,
             seqB
         ], dim=1)
@@ -107,12 +102,10 @@ class PiNUIMLP(nn.Module):
         x = F.relu(self.fc2(x))
         x = self.Dropout(x)
         x = self.fc3(x)
-        # x = self.sigmoid(x)
-
+        
         return x
-
-# Training and Evaluation
-## MLP  
+    
+# Training Function
 def train_model(model, train_loader,test_loader, criterion, optimizer, num_epochs, device='cuda', early_stopping=5):
 
     model.to(device)
@@ -131,7 +124,7 @@ def train_model(model, train_loader,test_loader, criterion, optimizer, num_epoch
         for batch_features, batch_targets in progress.track(train_loader, description=f"Epoch {epoch + 1}"):
             
             batch_features = {k:v.to(device, non_blocking=True) for k, v in batch_features.items()}
-            batch_targets = batch_targets.to(device, non_blocking=True).unsqueeze(1)
+            batch_targets = batch_targets.to(device, non_blocking=True).unsqueeze(-1)
 
             optimizer.zero_grad()
             outputs = model(batch_features)
@@ -141,7 +134,7 @@ def train_model(model, train_loader,test_loader, criterion, optimizer, num_epoch
             train_loss += loss.item()
             train_predictions.extend(outputs.detach().cpu().numpy())
             train_actuals.extend(batch_targets.cpu().numpy())
-
+    
         # Validation phase
         model.eval()
         val_loss = 0
@@ -158,14 +151,19 @@ def train_model(model, train_loader,test_loader, criterion, optimizer, num_epoch
                                 
                 val_loss += v_loss.item()
                 val_predictions.extend(outputs.cpu().numpy())
-                val_actuals.extend(outputs.cpu().numpy())
+                val_actuals.extend(batch_targets.cpu().numpy()) 
 
+        # print("Train Predictions:", np.array(train_predictions).shape)
+        # print("Train Actuals:", np.array(train_actuals).shape)
+
+        
         # Metrics
         train_loss /= len(train_loader)
         val_loss /= len(test_loader)
         train_correlation = np.corrcoef(train_actuals, train_predictions)[0,1]
         val_correlation = np.corrcoef(val_actuals, val_predictions)[0,1]
         
+
         # Append each epoch history
         training_history.append({
             'epoch': epoch + 1, 
@@ -175,7 +173,7 @@ def train_model(model, train_loader,test_loader, criterion, optimizer, num_epoch
             'val_correlation': val_correlation
         })
 
-        print(f'\n Epoch: {epoch + 1}/{num_epochs} ')
+        print(f'\n Epoch: {epoch + 1}/{num_epochs} ') 
         print(f'\n Training loss: {train_loss:.4f}, Correlation: {train_correlation:4f}')
         print(f'\n Validation loss: {val_loss:.4f}, Correlation: {val_correlation:.4f}')
 
@@ -193,7 +191,7 @@ def train_model(model, train_loader,test_loader, criterion, optimizer, num_epoch
     
     return pd.DataFrame(training_history)
 
-
+# Evaluation
 def evaluate_model(model, test_loader, device='cuda'):
 
     model.to(device)
@@ -213,13 +211,11 @@ def evaluate_model(model, test_loader, device='cuda'):
     
     return np.array(predictions), np.array(actuals)
 
-
 def main():
-
     # Load dataset
     print("Loading Data...")
     data_human = pd.read_csv("https://shiru-public.s3.us-west-2.amazonaws.com/PiNUI/PiNUI-human.csv")
-    
+
     # Prepare dataset
     train_val_proteins, test_proteins = train_test_split(data_human, train_size=0.8)
     print("Preparing dataset...")
@@ -227,14 +223,15 @@ def main():
         train_val_proteins, test_proteins, target='interaction', batch_size=32
     )
 
+    # Main
     print("Intializing the Model...")
     model = PiNUIMLP(
-        input_dim=1000, 
+        input_dim=2000, 
         output_dim=1, 
         hidden_dim=256, 
         dropout=0.1,
     )
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.AdamW(model.parameters(), lr = 0.001)
     num_epochs = 10
     early_stopping = 5
@@ -280,7 +277,7 @@ def main():
     with open("results/results.pkl", "wb") as f:
         pickle.dump(results, f)
     print("Results saved in results directory.")
-    
+
 
 if __name__ == "__main__":
     main()
