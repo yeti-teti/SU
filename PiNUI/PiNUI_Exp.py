@@ -55,9 +55,7 @@ class PiNUIDataset(Dataset):
         return len(self.targets)
 
     def __getitem__(self, idx):
-
-        # seq = torch.cat((self.seqA[idx], self.seqB[idx]), 1)
-        return {'seqA':self.seqA[idx], 'seqB':self.seqB[idx]}, self.targets[idx]
+        return {'seqA': self.seqA[idx], 'seqB': self.seqB[idx]}, self.targets[idx]
     
 # Prepare dataset for training
 def prepare_data(train_df, test_df, target='interaction', batch_size=32, max_length=1000):
@@ -109,13 +107,13 @@ class PiNUIMLP(nn.Module):
         x = F.relu(self.fc2(x))
         x = self.Dropout(x)
         x = self.fc3(x)
-        x = self.sigmoid(x)
+        # x = self.sigmoid(x)
 
         return x
 
 # Training and Evaluation
 ## MLP  
-def train_model(model, train_loader,test_loader, criterion, optimizer, num_epochs, device='cuda', early_stopping='5'):
+def train_model(model, train_loader,test_loader, criterion, optimizer, num_epochs, device='cuda', early_stopping=5):
 
     model.to(device)
     best_val_loss = float('inf')
@@ -133,7 +131,7 @@ def train_model(model, train_loader,test_loader, criterion, optimizer, num_epoch
         for batch_features, batch_targets in progress.track(train_loader, description=f"Epoch {epoch + 1}"):
             
             batch_features = {k:v.to(device, non_blocking=True) for k, v in batch_features.items()}
-            batch_targets = batch_targets.to(device, non_blocking=True).unsqueeze(-1)
+            batch_targets = batch_targets.to(device, non_blocking=True).unsqueeze(1)
 
             optimizer.zero_grad()
             outputs = model(batch_features)
@@ -155,7 +153,7 @@ def train_model(model, train_loader,test_loader, criterion, optimizer, num_epoch
                 batch_features = {k:v.to(device, non_blocking=True) for k, v in batch_features.items()}
                 batch_targets = batch_targets.to(device, non_blocking=True).unsqueeze(-1)
 
-                outputs = model(batch_targets)
+                outputs = model(batch_features)
                 v_loss = criterion(outputs, batch_targets)
                                 
                 val_loss += v_loss.item()
@@ -206,7 +204,7 @@ def evaluate_model(model, test_loader, device='cuda'):
     with torch.no_grad():
         for batch_features, batch_targets in test_loader:
             batch_features = {k:v.to(device, non_blocking=True) for k, v in batch_features.items()}
-            batch_targets = batch_targets.to(device, non_blocking=True)
+            batch_targets = batch_targets.to(device, non_blocking=True).unsqueeze(-1)
 
             outputs = model(batch_features)
 
@@ -270,7 +268,7 @@ def main():
     predictions, actuals = evaluate_model(model, train_loader, device)
 
     correlation = np.corrcoef(actuals, predictions)[0,1]
-    print("\n Final correlation: {correlation:.4f}")
+    print(f"\n Final correlation: {correlation:.4f}")
 
     # Saving the results
     results = {
@@ -279,7 +277,7 @@ def main():
         'actuals': actuals   
     }
     os.makedirs("results", exist_ok=True)
-    with open("results/resuls.pkl", "wb") as f:
+    with open("results/results.pkl", "wb") as f:
         pickle.dump(results, f)
     print("Results saved in results directory.")
     
