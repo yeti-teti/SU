@@ -18,9 +18,13 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, roc_auc_score, f1_score
 
 
-# Data Prep
+
+###############################################################################
+# Data Preparation
+###############################################################################
 def encode_sequence(seq, max_length=1000):
     # Define a mapping for common amino acids
     amino_acids = "ACDEFGHIKLMNPQRSTVWY"
@@ -42,12 +46,16 @@ class PiNUIDataset(Dataset):
         # Encode sequences from strings to numerical lists
         self.seqA = [encode_sequence(seq, max_length) for seq in seqA]
         self.seqB = [encode_sequence(seq, max_length) for seq in seqB]
-        self.targets = targets
+        # Ensure targets are in a contiguous array of type float32:
+        self.targets = torch.from_numpy(
+            np.ascontiguousarray(np.array(targets, dtype=np.float32))
+        )
 
         # Convert the numerical lists and targets to tensors
         self.seqA = torch.tensor(self.seqA, dtype=torch.float32)
         self.seqB = torch.tensor(self.seqB, dtype=torch.float32)
-        self.targets = torch.tensor(self.targets, dtype=torch.float32)
+        # self.targets = torch.tensor(self.targets, dtype=torch.float32)
+        # self.targets = torch.from_numpy(self.targets).float()
 
     def __len__(self):
         return len(self.targets)
@@ -60,11 +68,11 @@ def prepare_data(train_df, test_df, target='interaction', batch_size=32, max_len
     # Extract sequences and target values
     train_seqA = train_df['seqA'].values
     train_seqB = train_df['seqB'].values
-    y_train = train_df[target].values
+    y_train = train_df[target].astype(np.int32).values
   
     test_seqA = test_df['seqA'].values
     test_seqB = test_df['seqB'].values
-    y_test = test_df[target].values
+    y_test = test_df[target].astype(np.int32).values
   
     # Create datasets with encoding
     train_dataset = PiNUIDataset(train_seqA, train_seqB, y_train, max_length)
@@ -76,7 +84,11 @@ def prepare_data(train_df, test_df, target='interaction', batch_size=32, max_len
   
     return train_loader, test_loader
 
-# Model
+
+
+###############################################################################
+# Model Definition
+###############################################################################
 ## MLP  
 class PiNUIMLP(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dim, dropout=0.1):
@@ -105,7 +117,8 @@ class PiNUIMLP(nn.Module):
         
         return x
     
-# Training Function
+
+# Train and Evaluatie
 def train_model(model, train_loader,test_loader, criterion, optimizer, num_epochs, device='cuda', early_stopping=5):
 
     model.to(device)
@@ -117,65 +130,49 @@ def train_model(model, train_loader,test_loader, criterion, optimizer, num_epoch
 
         # Training phase
         model.train()
-        train_loss = 0
-        train_predictions = []
-        train_actuals = []
+        train_loss = 0.0
 
         for batch_features, batch_targets in progress.track(train_loader, description=f"Epoch {epoch + 1}"):
             
-            batch_features = {k:v.to(device, non_blocking=True) for k, v in batch_features.items()}
-            batch_targets = batch_targets.to(device, non_blocking=True).unsqueeze(-1)
+            batch_features = {k:v.to(device) for k, v in batch_features.items()}
+            batch_targets = batch_targets.to(device).unsqueeze(-1)
 
             optimizer.zero_grad()
             outputs = model(batch_features)
             loss = criterion(outputs, batch_targets)
-            loss.backward()
+            loss.backward() 
+            optimizer.step()
 
             train_loss += loss.item()
-            train_predictions.extend(outputs.detach().cpu().numpy())
-            train_actuals.extend(batch_targets.cpu().numpy())
     
         # Validation phase
         model.eval()
-        val_loss = 0
-        val_predictions = []
-        val_actuals = []
-
+        val_loss = 0.0
         with torch.no_grad():
             for batch_features, batch_targets in test_loader:
-                batch_features = {k:v.to(device, non_blocking=True) for k, v in batch_features.items()}
-                batch_targets = batch_targets.to(device, non_blocking=True).unsqueeze(-1)
+                batch_features = {k:v.to(device) for k, v in batch_features.items()}
+                batch_targets = batch_targets.to(device).unsqueeze(-1)
 
                 outputs = model(batch_features)
                 v_loss = criterion(outputs, batch_targets)
                                 
                 val_loss += v_loss.item()
-                val_predictions.extend(outputs.cpu().numpy())
-                val_actuals.extend(batch_targets.cpu().numpy()) 
 
-        # print("Train Predictions:", np.array(train_predictions).shape)
-        # print("Train Actuals:", np.array(train_actuals).shape)
-
-        
         # Metrics
         train_loss /= len(train_loader)
         val_loss /= len(test_loader)
-        train_correlation = np.corrcoef(train_actuals, train_predictions)[0,1]
-        val_correlation = np.corrcoef(val_actuals, val_predictions)[0,1]
-        
+
 
         # Append each epoch history
         training_history.append({
             'epoch': epoch + 1, 
             'train_loss': train_loss, 
-            'val_loss': val_loss, 
-            'train_correlation': train_correlation,
-            'val_correlation': val_correlation
+            'val_loss': val_loss
         })
 
         print(f'\n Epoch: {epoch + 1}/{num_epochs} ') 
-        print(f'\n Training loss: {train_loss:.4f}, Correlation: {train_correlation:4f}')
-        print(f'\n Validation loss: {val_loss:.4f}, Correlation: {val_correlation:.4f}')
+        print(f'\n Training loss: {train_loss:.4f}')
+        print(f'\n Validation loss: {val_loss:.4f}')
 
         # Early stopping 
         if val_loss < best_val_loss:
@@ -185,13 +182,12 @@ def train_model(model, train_loader,test_loader, criterion, optimizer, num_epoch
         else:
             patience_counter += 1
 
-        if patience_counter >= early_stopping:
-            print(f'Early stopping after {epoch + 1} epochs')
-            break
+            if patience_counter >= early_stopping:
+                print(f'Early stopping after {epoch + 1} epochs')
+                break
     
     return pd.DataFrame(training_history)
 
-# Evaluation
 def evaluate_model(model, test_loader, device='cuda'):
 
     model.to(device)
@@ -206,24 +202,38 @@ def evaluate_model(model, test_loader, device='cuda'):
 
             outputs = model(batch_features)
 
-            predictions.extend(outputs.cpu().numpy())
-            actuals.extend(batch_targets.cpu().numpy())
+            predictions.append(outputs.cpu().numpy())
+            actuals.append(batch_targets.cpu().numpy())
     
-    return np.array(predictions), np.array(actuals)
+    predictions = np.concatenate(predictions, axis=0)
+    actuals = np.concatenate(actuals, axis=0)
+    
+    return predictions, actuals 
 
+
+###############################################################################
+# Main
+###############################################################################
 def main():
-    # Load dataset
     print("Loading Data...")
     data_human = pd.read_csv("https://shiru-public.s3.us-west-2.amazonaws.com/PiNUI/PiNUI-human.csv")
 
-    # Prepare dataset
-    train_val_proteins, test_proteins = train_test_split(data_human, train_size=0.8)
-    print("Preparing dataset...")
+    # Optional: check for NaN or invalid values in your dataset
+    # data_human.dropna(subset=['seqA', 'seqB', 'interaction'], inplace=True)
+
+    print("Splitting Data...")
+    train_df, test_df = train_test_split(data_human, train_size=0.8, shuffle=True)
+
+    print("Preparing Dataloaders...")
     train_loader, test_loader = prepare_data(
-        train_val_proteins, test_proteins, target='interaction', batch_size=32
+        train_df,
+        test_df,
+        target='interaction',
+        batch_size=32,
+        max_length=1000
     )
 
-    # Main
+    # Initialize model
     print("Intializing the Model...")
     model = PiNUIMLP(
         input_dim=2000, 
@@ -232,9 +242,7 @@ def main():
         dropout=0.1,
     )
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.AdamW(model.parameters(), lr = 0.001)
-    num_epochs = 10
-    early_stopping = 5
+    optimizer = optim.AdamW(model.parameters(), lr=1e-4)
 
     print("Setting the device...")
     if torch.cuda.is_available():
@@ -254,29 +262,52 @@ def main():
         test_loader, 
         criterion, 
         optimizer, 
-        num_epochs, 
-        device, 
-        early_stopping
+        num_epochs=1, 
+        device=device, 
+        early_stopping=5
     )
 
-
+    # Evaluate
     print("Evaluating the model...")
     model.load_state_dict(torch.load("best_model.pth"))
-    predictions, actuals = evaluate_model(model, train_loader, device)
+    raw_logits, true_targets = evaluate_model(model, test_loader, device=device)
 
-    correlation = np.corrcoef(actuals, predictions)[0,1]
-    print(f"\n Final correlation: {correlation:.4f}")
+    # Convert logits to probabilities
+    probs = torch.sigmoid(torch.tensor(raw_logits)).numpy().flatten()
+    predicted_labels = (probs > 0.5).astype(np.int32)
+    # Flatten true_targets and convert to int (if needed)
+    true_labels = true_targets.astype(np.int32).flatten()
 
-    # Saving the results
-    results = {
-        'history': history, 
-        'predictions': predictions, 
-        'actuals': actuals   
-    }
+    # Debug prints
+    print("True labels shape:", true_labels.shape)
+    print("Probabilities shape:", probs.shape)
+    print("Unique true labels:", np.unique(true_labels))
+    print("Unique predicted labels:", np.unique(predicted_labels))
+
+    # Compute classification metrics
+    accuracy = accuracy_score(true_labels, predicted_labels)
+    roc_auc = roc_auc_score(true_labels, probs)  # Removed multi_class parameter
+    f1 = f1_score(true_labels, predicted_labels)
+
+    print(f"\nAccuracy: {accuracy:.4f}")
+    print(f"ROC AUC: {roc_auc:.4f}")
+    print(f"F1 Score: {f1:.4f}")
+
+
+    # Save results
     os.makedirs("results", exist_ok=True)
+    results = {
+        'history': history,
+        'raw_logits': raw_logits,
+        'true_targets': true_targets,
+        'accuracy': accuracy,
+        'roc_auc': roc_auc,
+        'f1': f1
+    }
     with open("results/results.pkl", "wb") as f:
         pickle.dump(results, f)
-    print("Results saved in results directory.")
+
+    print("Results saved to 'results/results.pkl'")
 
 
 if __name__ == "__main__":
